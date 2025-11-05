@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Panel de Transmisión OBS + YouTube</title>
+  <style>
+    body {
+      font-family: Arial;
+      background: #0b0b0b;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 18px;
+      padding: 20px;
+    }
+
+    h1 { color: #e50914; }
+
+    button {
+      padding: 10px 18px;
+      border-radius: 8px;
+      border: none;
+      color: #fff;
+      cursor: pointer;
+      transition: background 0.3s, transform 0.2s;
+      font-weight: bold;
+      box-shadow: 0 0 8px #000;
+    }
+
+    button:hover:not(:disabled) { transform: scale(1.05); }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    /* 🟢 Botón iniciar */
+    #startBtn {
+      background: #00c853;
+    }
+    #startBtn:hover:not(:disabled) {
+      background: #00e676;
+    }
+
+    /* 🔴 Botón detener */
+    #stopBtn {
+      background: #d50000;
+    }
+    #stopBtn:hover:not(:disabled) {
+      background: #ff1e1e;
+    }
+
+    .status-box {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .indicator {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: gray;
+      box-shadow: 0 0 8px #000;
+    }
+    .connected { background: #00e676; }
+    .disconnected { background: #e50914; }
+    .streaming { background: #1e90ff; }
+
+    #notif {
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      background: #222;
+      opacity: 0;
+      transition: opacity .4s;
+      box-shadow: 0 0 8px #000;
+    }
+
+    #placeholder {
+      width: 100%;
+      max-width: 720px;
+      height: 405px;
+      border-radius: 10px;
+      background: #111;
+      box-shadow: 0 0 10px #000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      text-align: center;
+    }
+
+    #placeholder p { font-size: 1.1em; color: #ccc; margin: 0; }
+
+    #placeholder button {
+      background: #e50914;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 10px 16px;
+      cursor: pointer;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+    #placeholder button:hover { background: #ff1e1e; }
+
+    /* 🔹 Overlay de confirmación en OBS */
+    #overlayObsConfirm {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.85);
+      color: white;
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+      z-index: 9999;
+    }
+    #overlayObsConfirm h2 {
+      color: #ffcc00;
+      font-size: 1.8em;
+      margin-bottom: 10px;
+    }
+    #overlayObsConfirm p {
+      color: #ddd;
+      font-size: 1.1em;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎥 TRANSMISION EN VIVO</h1>
+  <h2>🎥 El Viejo Poli</h2>
+  <div id="notif">Conectando a OBS...</div>
+
+  <div class="status-box">
+    <span>OBS:</span><div id="obsStatus" class="indicator disconnected"></div>
+    <span>Transmisión:</span><div id="streamStatus" class="indicator disconnected"></div>
+  </div>
+
+  <div>
+    <button id="startBtn">▶️ Iniciar transmisión</button>
+    <button id="stopBtn" disabled>⏹️ Detener transmisión</button>
+  </div>
+
+  <h2>📺 Transmisión en vivo</h2>
+  <div id="placeholder">
+    <p>📺 Presiona el botón para ver el vivo directamente en YouTube</p>
+    <button onclick="window.open('https://www.youtube.com/channel/UCXa6cWbPQ8TE8N0qEAt_WJw/live', '_blank')">
+      🔴 Ver transmisión en YouTube
+    </button>
+  </div>
+
+  <!-- 🔹 Overlay: confirma en OBS -->
+  <div id="overlayObsConfirm">
+    <h2>⚙️ Confirma la emisión en OBS</h2>
+    <p>Abre la ventana de OBS y configura tu transmisión antes de continuar.</p>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/obs-websocket-js@5.0.3/dist/obs-ws.min.js"></script>
+  <script>
+    const channel = new BroadcastChannel('panel_transmision');
+    channel.onmessage = (msg) => {
+      if (msg.data === 'panel_activo') {
+        alert('⚠️ El panel ya está abierto en otra ventana.');
+        window.close();
+      }
+    };
+    channel.postMessage('panel_activo');
+    window.addEventListener('beforeunload', () => channel.postMessage('panel_cerrado'));
+
+    const notif = document.getElementById('notif');
+    const obsStatus = document.getElementById('obsStatus');
+    const streamStatus = document.getElementById('streamStatus');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const overlayObsConfirm = document.getElementById('overlayObsConfirm');
+
+    const OBS_URL = "ws://localhost:4455";
+    const OBS_PASSWORD = "bruyaz";
+    const RECONNECT_DELAY = 5000;
+    let reconnecting = false;
+    let obs;
+
+    function showNotif(text, timeout = 3000) {
+      notif.textContent = text;
+      notif.style.opacity = 1;
+      setTimeout(()=> notif.style.opacity = 0, timeout);
+    }
+
+    async function connectOBS() {
+      try {
+        obs = new OBSWebSocket();
+        await obs.connect(OBS_URL, OBS_PASSWORD);
+        obsStatus.classList.replace('disconnected','connected');
+        showNotif('✅ Conectado a OBS', 2500);
+
+        obs.on('StreamStateChanged', ({ outputActive }) => {
+          if (outputActive) {
+            streamStatus.classList.replace('disconnected','streaming');
+            overlayObsConfirm.style.display = 'none';
+            startBtn.disabled = true;
+            startBtn.textContent = "🟢 Transmitiendo...";
+            stopBtn.disabled = false;
+            showNotif('📡 Transmisión iniciada', 2000);
+          } else {
+            streamStatus.classList.replace('streaming','disconnected');
+            startBtn.disabled = false;
+            startBtn.textContent = "▶️ Iniciar transmisión";
+            stopBtn.disabled = true;
+            showNotif('🛑 Transmisión detenida', 2000);
+          }
+        });
+
+        obs.on('ConnectionClosed', handleDisconnect);
+      } catch (err) {
+        obsStatus.classList.replace('connected','disconnected');
+        showNotif('❌ No se pudo conectar a OBS — reintentando', 3000);
+        scheduleReconnect();
+      }
+    }
+
+    function handleDisconnect() {
+      obsStatus.classList.replace('connected','disconnected');
+      showNotif('🔌 OBS desconectado — reintentando', 3000);
+      scheduleReconnect();
+    }
+
+    function scheduleReconnect() {
+      if (reconnecting) return;
+      reconnecting = true;
+      setTimeout(async () => {
+        reconnecting = false;
+        await connectOBS();
+      }, RECONNECT_DELAY);
+    }
+
+    async function startStream() {
+      overlayObsConfirm.style.display = 'flex';
+      startBtn.disabled = true;
+      startBtn.textContent = "⏳ Iniciando...";
+      try {
+        await obs.call('StartStream');
+        showNotif('🚀 Iniciando transmisión...', 3000);
+      } catch (err) {
+        console.error(err);
+        overlayObsConfirm.style.display = 'flex';
+        showNotif('⚙️ Configura la emisión en OBS antes de iniciar', 3000);
+        startBtn.disabled = false;
+        startBtn.textContent = "▶️ Iniciar transmisión";
+      }
+    }
+
+    async function stopStream() {
+      try {
+        await obs.call('StopStream');
+        showNotif('🛑 Deteniendo transmisión...', 2500);
+      } catch (err) {
+        showNotif('❌ Error al detener transmisión', 3000);
+      }
+    }
+
+    startBtn.addEventListener('click', startStream);
+    stopBtn.addEventListener('click', stopStream);
+
+    connectOBS();
+  </script>
+</body>
+</html>
